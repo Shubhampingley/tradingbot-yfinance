@@ -1,152 +1,131 @@
-# scanner.py
 import os
-import math
+import csv
 import time
 import requests
 import yfinance as yf
-from itertools import islice
+import pandas as pd
+from datetime import datetime
 
-# === CONFIG ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# ---------------- CONFIG ----------------
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Set in GitHub Secrets
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Set in GitHub Secrets
+CSV_FILE = "nifty500.csv"  # Stock list file
+TOP_N = 20  # Top gainers/losers count
+BATCH_SIZE = 100  # Batch size for yfinance requests
 
-# Alert threshold (percentage). Positive OR negative moves will be captured by absolute value.
-PCT_THRESHOLD = float(os.getenv("PCT_THRESHOLD", "2.0"))
-
-# Batch size for yfinance downloads (keeps fetches reliable)
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "100"))
-
-# Top 500 tickers (NSE format expected by yfinance). You can update/replace this list.
-TOP500 = [
-    "RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","HINDUNILVR.NS","ICICIBANK.NS","KOTAKBANK.NS",
-    "LT.NS","AXISBANK.NS","SBIN.NS","BHARTIARTL.NS","ITC.NS","HDFC.NS","BAJFINANCE.NS","MARUTI.NS",
-    "ASIANPAINT.NS","SBILIFE.NS","NESTLEIND.NS","HCLTECH.NS","SUNPHARMA.NS","ULTRACEMCO.NS",
-    # ... truncated for brevity — replace with full 500 list
-]
-# If you want full 500, upload or paste full list. For now assume list contains up to 500.
-
-# === Helpers ===
-def send_telegram(text: str):
+# ---------------- HELPERS ----------------
+def send_telegram(message: str):
+    """Send message to Telegram bot."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram not configured.")
+        print("Telegram not configured. Skipping send.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
-        r = requests.post(url, json=payload, timeout=20)
+        r = requests.post(url, json=payload, timeout=30)
         print("Telegram status:", r.status_code)
         if not r.ok:
             print("Telegram error:", r.text)
     except Exception as e:
-        print("Telegram exception:", e)
+        print("Failed sending telegram:", e)
 
-def chunked_iterable(iterable, size):
-    it = iter(iterable)
-    for first in it:
-        yield [first] + list(islice(it, size-1))
+def load_tickers(csv_path: str):
+    """Read stock symbols from CSV."""
+    tickers = []
+    with open(csv_path, newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            sym = row.get('Symbol') or row.get('symbol') or row.get('Ticker')
+            if sym:
+                tickers.append(sym.strip())
+    return tickers
 
-# === Core scanning ===
-def scan_top_n(tickers, pct_threshold=PCT_THRESHOLD, batch_size=BATCH_SIZE):
-    matches = []  # list of tuples: (symbol, last, prev_close, pct_change, volume)
-    total = len(tickers)
-    print(f"Scanning {total} tickers in batches of {batch_size}...")
+def chunked(iterable, size):
+    """Yield fixed-size chunks from iterable."""
+    for i in range(0, len(iterable), size):
+        yield iterable[i:i+size]
 
-    for batch in chunked_iterable(tickers, batch_size):
-        tickers_str = " ".join(batch)
+# ---------------- CORE LOGIC ----------------
+def compute_changes(tickers):
+    """Return list of tuples: (ticker, prev_close, last_price, pct_change)."""
+    results = []
+    for batch in chunked(tickers, BATCH_SIZE):
         try:
-            # fetch 2 days to compute previous close and last close
-            df = yf.download(tickers=batch, period="2d", interval="1d", progress=False, threads=True)
+            df = yf.download(batch, period="2d", interval="1d", progress=False, threads=True)
         except Exception as e:
-            print("yfinance download error for batch:", e)
-            time.sleep(2)
+            print("yfinance batch download error:", e)
             continue
 
-        # If single ticker, df has single-column structure; normalize to same shape
-        # df may be a multiindex columns if multiple tickers
         if df.empty:
-            print("No data returned for batch, skipping")
+            print("Empty dataframe for batch", batch)
             continue
 
-        # yfinance returns columns like ('Close', 'RELIANCE.NS') or if group_by='column' different shapes
-        # We'll try to handle both common shapes
-        try:
-            # MultiTicker: columns are multiindex (Open/High/Low/Close/Volume) x ticker
-            if isinstance(df.columns, pd.MultiIndex):
-                for ticker in batch:
-                    try:
-                        close_series = df['Close'][ticker].dropna()
-                    except Exception:
-                        # different shape: maybe single-ticker, handle later
-                        continue
-                    if len(close_series) < 1:
+        if isinstance(df.columns, pd.MultiIndex):
+            for t in batch:
+                try:
+                    close_series = df['Close'][t].dropna()
+                    if close_series.empty:
                         continue
                     last = float(close_series.iloc[-1])
                     prev = float(close_series.iloc[-2]) if len(close_series) > 1 else last
-                    # volume
-                    vol = int(df['Volume'][ticker].iloc[-1]) if 'Volume' in df.columns.get_level_values(0) else 0
-                    pct = (last - prev) / prev * 100 if prev else 0.0
-                    if abs(pct) >= pct_threshold:
-                        matches.append((ticker, last, prev, pct, vol))
-            else:
-                # Single ticker or single-index columns: fallback
-                # For batch with multiple tickers, yfinance sometimes returns single-level columns with ticker in index
-                for ticker in batch:
-                    sub = df.xs(ticker, axis=1, level=1) if 'level' in dir(df.columns) else None
-                    # Fallback simpler: use yf.Ticker per ticker
-                    data = yf.Ticker(ticker).history(period="2d")
-                    if data.empty:
-                        continue
-                    last = float(data["Close"].iloc[-1])
-                    prev = float(data["Close"].iloc[-2]) if len(data) > 1 else last
-                    vol = int(data["Volume"].iloc[-1]) if "Volume" in data else 0
-                    pct = (last - prev) / prev * 100 if prev else 0.0
-                    if abs(pct) >= pct_threshold:
-                        matches.append((ticker, last, prev, pct, vol))
-        except Exception as e:
-            print("Error processing batch:", e)
-            # As a robust fallback process tickers one by one
-            for ticker in batch:
+                    pct = ((last - prev) / prev) * 100 if prev else 0.0
+                    results.append((t, prev, last, pct))
+                except Exception as e:
+                    print(f"Error processing {t}:", e)
+        else:
+            for t in batch:
                 try:
-                    data = yf.Ticker(ticker).history(period="2d")
-                    if data.empty:
+                    hist = yf.Ticker(t).history(period="2d")
+                    if hist.empty:
                         continue
-                    last = float(data["Close"].iloc[-1])
-                    prev = float(data["Close"].iloc[-2]) if len(data) > 1 else last
-                    vol = int(data["Volume"].iloc[-1]) if "Volume" in data else 0
-                    pct = (last - prev) / prev * 100 if prev else 0.0
-                    if abs(pct) >= pct_threshold:
-                        matches.append((ticker, last, prev, pct, vol))
-                except Exception as e2:
-                    print("Ticker-level fetch error for", ticker, e2)
+                    last = float(hist['Close'].iloc[-1])
+                    prev = float(hist['Close'].iloc[-2]) if len(hist) > 1 else last
+                    pct = ((last - prev) / prev) * 100 if prev else 0.0
+                    results.append((t, prev, last, pct))
+                except Exception as e:
+                    print(f"Error per-ticker {t}:", e)
 
-        # small throttle to be polite
-        time.sleep(0.5)
+        time.sleep(0.5)  # Avoid API rate limits
 
-    return matches
+    return results
 
-# === Entrypoint ===
-def main():
-    # Quick dependency guard
+def format_message(changes):
+    """Format top gainers and losers into Telegram message."""
+    df = pd.DataFrame(changes, columns=['Ticker','Prev','Last','Pct'])
+    df = df.dropna(subset=['Prev','Last'])
+    df = df.sort_values('Pct', ascending=False)
+
+    top_gainers = df.head(TOP_N)
+    top_losers = df.tail(TOP_N).sort_values('Pct')
+
+    now = datetime.now().strftime('%Y-%m-%d')
+    lines = [f"📊 NSE Top {TOP_N} Gainers & Losers — {now}\n"]
+
+    lines.append("📈 Top Gainers:")
+    for i, row in enumerate(top_gainers.itertuples(), start=1):
+        lines.append(f"{i}. {row.Ticker}: ₹{row.Last:.2f} ({row.Pct:+.2f}%)")
+
+    lines.append("\n📉 Top Losers:")
+    for i, row in enumerate(top_losers.itertuples(), start=1):
+        lines.append(f"{i}. {row.Ticker}: ₹{row.Last:.2f} ({row.Pct:+.2f}%)")
+
+    return "\n".join(lines)
+
+# ---------------- ENTRYPOINT ----------------
+if __name__ == '__main__':
     try:
-        import pandas as pd
-    except Exception:
-        print("pandas required. Please install pandas.")
-        return
+        tickers = load_tickers(CSV_FILE)
+        if not tickers:
+            raise SystemExit(f"{CSV_FILE} is empty or missing.")
+        print(f"Loaded {len(tickers)} tickers. Starting scan...")
 
-    tickers = TOP500  # replace or load dynamically if you like
+        changes = compute_changes(tickers)
+        if not changes:
+            send_telegram("No data or error fetching prices today.")
+        else:
+            msg = format_message(changes)
+            send_telegram(msg)
 
-    matches = scan_top_n(tickers)
-
-    if not matches:
-        send_telegram("✅ Scan complete — No movers above threshold.")
-        return
-
-    # Format message
-    lines = [f"🚨 Movers (|chg| ≥ {PCT_THRESHOLD}%): {len(matches)}"]
-    for s, last, prev, pct, vol in sorted(matches, key=lambda x: -abs(x[3]))[:200]:
-        lines.append(f"{s}: ₹{last:.2f} ({pct:+.2f}%), vol: {vol}")
-    message = "\n".join(lines[:400])  # telegram message size guard
-    send_telegram(message)
-
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+        print("Fatal error:", e)
+        send_telegram(f"❌ Scanner fatal error: {e}")
