@@ -62,6 +62,13 @@ def real_time_stock_scanner(ticker, telegram_token, telegram_chat_id):
     df['Support'] = df['Support'].fillna(method='ffill')  # Forward fill NaN Support
     df['Resistance'] = df['Resistance'].fillna(method='ffill')  # Forward fill NaN Resistance
     
+    # Align all columns to ensure they are compared correctly
+    df['MACD'], df['Signal'], df['Support'], df['Resistance'] = \
+        df['MACD'].align(df['Signal'], join='inner')[0], \
+        df['MACD'].align(df['Signal'], join='inner')[1], \
+        df['Support'].align(df['Resistance'], join='inner')[0], \
+        df['Support'].align(df['Resistance'], join='inner')[1]
+
     # Generate Buy and Sell Signals based on simplified conditions
     df['Buy_Signal'] = (df['MACD'] > df['Signal']) & (df['Close'] > df['Support'])
     df['Sell_Signal'] = (df['MACD'] < df['Signal']) & (df['Close'] < df['Resistance'])
