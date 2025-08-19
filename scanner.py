@@ -9,8 +9,8 @@ from datetime import datetime
 # ---------------- CONFIG ----------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Set in GitHub Secrets
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Set in GitHub Secrets
-CSV_FILE = "nifty500.csv"  # Stock list file (ensure this path is correct)
-TOP_N = 20  # Top gainers/losers count
+CSV_FILE = "nifty500.csv"  # Stock list file
+TOP_N = 10  # Fetch Top 10 gainers and losers (for testing)
 BATCH_SIZE = 100  # Batch size for yfinance requests
 
 # ---------------- HELPERS ----------------
@@ -36,7 +36,7 @@ def load_tickers(csv_path: str):
         with open(csv_path, newline='') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                sym = row.get('SYMBOL')  # Updated to match the 'SYMBOL' column in your CSV
+                sym = row.get('SYMBOL')  # Ensure correct column name
                 if sym:
                     tickers.append(sym.strip())
     except FileNotFoundError:
