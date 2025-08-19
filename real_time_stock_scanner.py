@@ -7,7 +7,8 @@ import matplotlib.pyplot as plt
 # Function to load stock symbols from a CSV file
 def load_stock_symbols(csv_file):
     df = pd.read_csv(csv_file)
-    stock_list = df['Symbol'].tolist()  # Extract stock symbols as a list
+    print(f"Columns in CSV: {df.columns}")  # Check the columns in the CSV
+    stock_list = df['Symbol'].tolist()  # Change 'Symbol' to match your column name if needed
     return stock_list
 
 # Function to calculate MACD
