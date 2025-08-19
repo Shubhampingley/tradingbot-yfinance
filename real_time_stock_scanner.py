@@ -95,7 +95,7 @@ def scan_real_time_stocks(csv_file, telegram_token, telegram_chat_id):
         print(f"Finished scanning {ticker}\n")
 
 # Example Usage: Pass the CSV file path here
-csv_file = 'nifty500.cv'  # CSV with the list of stock symbols (e.g., TATAMOTORS.NS, INFY.NS)
+csv_file = 'nifty500.csv'  # CSV with the list of stock symbols (e.g., TATAMOTORS.NS, INFY.NS)
 telegram_token = "YOUR_TELEGRAM_TOKEN"
 telegram_chat_id = "YOUR_TELEGRAM_CHAT_ID"
 
