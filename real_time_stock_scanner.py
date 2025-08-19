@@ -56,8 +56,11 @@ def real_time_stock_scanner(ticker, telegram_token, telegram_chat_id):
     df = calculate_macd(df)
     df = support_resistance(df)
     
-    # Align the columns before comparison
-    df = df.dropna(subset=['MACD', 'Signal', 'Support', 'Resistance'])  # Drop NaN rows
+    # Fill NaN values to avoid errors
+    df['MACD'] = df['MACD'].fillna(0)  # Fill NaN MACD with 0
+    df['Signal'] = df['Signal'].fillna(0)  # Fill NaN Signal with 0
+    df['Support'] = df['Support'].fillna(method='ffill')  # Forward fill NaN Support
+    df['Resistance'] = df['Resistance'].fillna(method='ffill')  # Forward fill NaN Resistance
     
     # Generate Buy and Sell Signals based on simplified conditions
     df['Buy_Signal'] = (df['MACD'] > df['Signal']) & (df['Close'] > df['Support'])
