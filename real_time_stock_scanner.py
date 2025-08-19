@@ -55,7 +55,9 @@ def real_time_stock_scanner(ticker, telegram_token, telegram_chat_id):
     # Apply MACD and Support/Resistance to today's data
     df = calculate_macd(df)
     df = support_resistance(df)
-    fib_levels = fibonacci_retracement(df)
+    
+    # Align the columns before comparison
+    df = df.dropna(subset=['MACD', 'Signal', 'Support', 'Resistance'])  # Drop NaN rows
     
     # Generate Buy and Sell Signals based on simplified conditions
     df['Buy_Signal'] = (df['MACD'] > df['Signal']) & (df['Close'] > df['Support'])
@@ -81,7 +83,7 @@ def real_time_stock_scanner(ticker, telegram_token, telegram_chat_id):
     
     # Display Fibonacci levels for setting targets
     print("Fibonacci Levels:")
-    for level, value in fib_levels.items():
+    for level, value in fibonacci_retracement(df).items():
         print(f"{level}: {value}")
     
     return df
