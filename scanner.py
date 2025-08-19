@@ -9,7 +9,7 @@ from datetime import datetime
 # ---------------- CONFIG ----------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")  # Set in GitHub Secrets
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # Set in GitHub Secrets
-CSV_FILE = "nifty500.csv"  # Stock list file
+CSV_FILE = "nifty500.csv"  # Stock list file (ensure this path is correct)
 TOP_N = 20  # Top gainers/losers count
 BATCH_SIZE = 100  # Batch size for yfinance requests
 
@@ -32,12 +32,17 @@ def send_telegram(message: str):
 def load_tickers(csv_path: str):
     """Read stock symbols from CSV."""
     tickers = []
-    with open(csv_path, newline='') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            sym = row.get('Symbol') or row.get('symbol') or row.get('Ticker')
-            if sym:
-                tickers.append(sym.strip())
+    try:
+        with open(csv_path, newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                sym = row.get('SYMBOL')  # Updated to match the 'SYMBOL' column in your CSV
+                if sym:
+                    tickers.append(sym.strip())
+    except FileNotFoundError:
+        print(f"Error: {csv_path} not found.")
+    except Exception as e:
+        print(f"Error reading {csv_path}: {e}")
     return tickers
 
 def chunked(iterable, size):
