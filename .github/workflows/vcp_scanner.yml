@@ -1,0 +1,32 @@
+name: VCP Daily Scanner
+
+on:
+  workflow_dispatch: {}          # allow manual run
+  schedule:
+    - cron: "15 9 * * 1-5"       # weekdays 09:15 UTC (~14:45 IST pre-open + buffer); adjust as you prefer
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install yfinance pandas numpy
+
+      - name: Run VCP scanner
+        run: python vcp_scanner.py
+
+      - name: Upload VCP results
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcp-candidates
+          path: vcp_candidates.csv
