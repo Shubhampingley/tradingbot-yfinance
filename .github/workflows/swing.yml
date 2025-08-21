@@ -1,50 +1,29 @@
-name: Telegram Diagnostics
+name: Telegram Smoke Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  diag:
+  ping:
     runs-on: ubuntu-latest
     env:
-      # Tries either pair of secret names
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.CHAT_ID }}
-
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
-      - name: Check secrets exist
-        run: |
-          set -e
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "::error::Missing TELEGRAM_BOT_TOKEN (or BOT_TOKEN) secret."
-            exit 1
-          fi
-          echo "✅ Token present"
-          if [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "::warning::TELEGRAM_CHAT_ID (or CHAT_ID) not set — will skip sendMessage test."
-          else
-            echo "✅ Chat ID present"
-          fi
-
       - name: Test getMe (valid token?)
         run: |
           set -e
-          resp=$(curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe")
+          resp=$(curl -s "https://api.telegram.org/bot${TELEGRAM_TOKEN}/getMe")
           echo "$resp"
           echo "$resp" | grep -q '"ok":true'
           echo "✅ getMe OK"
 
-      - name: Show getUpdates (helps find chat_id after you DM the bot)
-        run: |
-          curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates" | head -c 2000 || true
-
-      - name: Test sendMessage (only if chat id provided)
-        if: env.TELEGRAM_CHAT_ID != ''
+      - name: Send Telegram ping
         run: |
           set -e
-          resp=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="$TELEGRAM_CHAT_ID" \
-            -d text="✅ Telegram connectivity OK from GitHub Actions")
+          resp=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="✅ Telegram smoke test from GitHub Actions")
           echo "$resp"
           echo "$resp" | grep -q '"ok":true'
           echo "✅ sendMessage OK"
