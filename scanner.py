@@ -1,9 +1,9 @@
-# NSE Swing Scanner — full drop-in script (loosened logic)
+# NSE Swing Scanner — loosened logic
 # - Reads tickers from stocks.csv (must include column 'symbol')
 # - Generates BUY and WATCH (near-breakout) signals
 # - Sends results to Telegram
 # - Robust against yfinance MultiIndex / 2-D column quirks
-# - Optional diagnostics mode (DIAG_MODE) to see why a ticker failed
+# - DIAG_MODE shows why a ticker failed
 
 import os
 import pandas as pd
@@ -145,62 +145,77 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def buy_signal_row(row_prev, row, vol_mult=VOL_MULT, rsi_min=RSI_MIN):
     """
-    LOOSER BUY: allow 3 ways to trigger
-      A) Breakout: Close > prior N-day high, vol >= 0.85*VOL_MULT, EMA10>EMA30, RSI>=rsi_min, MACDhist>=0
-      B) EMA cross: EMA10 crossed above EMA30 today, vol >= 1.0, RSI >= max(43, rsi_min-5)
-      C) Trend-pullback: EMA10>EMA30, Close > EMA30, MACDhist>0, RSI >= max(45, rsi_min-3), Close within 1% of prior N-day high
+    LOOSER BUY: 4 ways to trigger
+      A) Breakout: Close > prior N-day high, vol >= 0.9*VOL_MULT (min 0.9), EMA10>EMA30, RSI>=rsi_min, MACDhist>=0
+      B) EMA cross: EMA10 crossed above EMA30 today, vol >= 0.9, RSI >= max(43, rsi_min-5)
+      C) Trend-pullback: EMA10>EMA30, Close > EMA30, MACDhist>0, RSI >= max(45, rsi_min-3),
+                         Close within 2% of prior N-day high
+      D) Continuation: EMA10>EMA30, Close/EMA30 >= 1.01, MACDhist rising (today > yday),
+                       RSI >= max(50, rsi_min), VolRatio >= 0.9
     """
     reasons = []
 
     # Common pieces
-    trend_up = pd.notna(row["EMA10"]) and pd.notna(row["EMA30"]) and (row["EMA10"] > row["EMA30"])
-    macd_ok  = pd.notna(row["MACDhist"]) and (row["MACDhist"] >= 0)
-    volx     = row.get("VolRatio", np.nan)
-    vol_ok   = pd.notna(volx) and (volx >= float(vol_mult))
-    vol_ok_lo= pd.notna(volx) and (volx >= max(1.0, float(vol_mult)*0.85))
-    rsi      = row.get("RSI14", np.nan)
-    rsi_ok   = pd.notna(rsi) and (rsi >= float(rsi_min)) and (rsi > row_prev.get("RSI14", rsi - 1))
-    rsi_lo   = pd.notna(rsi) and (rsi >= max(43.0, float(rsi_min) - 5))
+    ema10, ema30 = row.get("EMA10", np.nan), row.get("EMA30", np.nan)
+    trend_up = pd.notna(ema10) and pd.notna(ema30) and (ema10 > ema30)
+    macdh, macdh_prev = row.get("MACDhist", np.nan), row_prev.get("MACDhist", np.nan)
+    macd_ok  = pd.notna(macdh) and (macdh >= 0)
+    macd_rising = pd.notna(macdh) and pd.notna(macdh_prev) and (macdh > macdh_prev)
 
-    highN    = row.get("High20", np.nan)  # computed using BO_LOOKBACK in compute_indicators
+    volx = row.get("VolRatio", np.nan)
+    vol_ok     = pd.notna(volx) and (volx >= float(vol_mult))
+    vol_ok_09  = pd.notna(volx) and (volx >= 0.9)
+    vol_ok_lo  = pd.notna(volx) and (volx >= max(0.9, float(vol_mult) * 0.9))
+
+    rsi = row.get("RSI14", np.nan)
+    rsi_ok    = pd.notna(rsi) and (rsi >= float(rsi_min)) and (rsi > row_prev.get("RSI14", rsi - 1))
+    rsi_lo    = pd.notna(rsi) and (rsi >= max(43.0, float(rsi_min) - 5))
+    rsi_cont  = pd.notna(rsi) and (rsi >= max(50.0, float(rsi_min)))
+
+    highN = row.get("High20", np.nan)
     breakout = pd.notna(highN) and (row["Close"] > highN)
 
     # (A) Breakout mode (looser volume)
-    mode_A = trend_up and breakout and vol_ok_lo and rsi_ok and macd_ok
+    mode_A = trend_up and breakout and (vol_ok or vol_ok_lo) and rsi_ok and macd_ok
 
     # (B) EMA cross mode (fresh trend start)
     crossed = pd.notna(row_prev.get("EMA10")) and pd.notna(row_prev.get("EMA30")) and \
-              (row_prev["EMA10"] <= row_prev["EMA30"]) and (row["EMA10"] > row["EMA30"])
-    mode_B = crossed and (pd.notna(volx) and volx >= 1.0) and rsi_lo
+              (row_prev["EMA10"] <= row_prev["EMA30"]) and (ema10 > ema30)
+    mode_B = crossed and vol_ok_09 and rsi_lo
 
-    # (C) Trend-pullback near prior high (no strict breakout yet)
-    near_high = pd.notna(highN) and highN > 0 and 0 < (highN - row["Close"]) / highN <= 0.01  # within 1%
-    above_base = trend_up and (row["Close"] > row.get("EMA30", row["Close"]))
-    mode_C = above_base and macd_ok and (pd.notna(volx) and volx >= 1.0) and (pd.notna(rsi) and rsi >= max(45.0, float(rsi_min) - 3)) and near_high
+    # (C) Trend-pullback near prior high
+    near_high = pd.notna(highN) and highN > 0 and 0 < (highN - row["Close"]) / highN <= 0.02  # 2%
+    above_base = trend_up and (row["Close"] > ema30 if pd.notna(ema30) else False)
+    mode_C = above_base and macd_ok and vol_ok_09 and (pd.notna(rsi) and rsi >= max(45.0, float(rsi_min) - 3)) and near_high
 
-    ok = bool(mode_A or mode_B or mode_C)
-    if not ok:
+    # (D) Continuation (no breakout yet, but strong thrust)
+    ema_gap_ok = trend_up and pd.notna(ema30) and (row["Close"] / ema30 >= 1.01)
+    mode_D = ema_gap_ok and macd_rising and rsi_cont and vol_ok_09
+
+    ok = bool(mode_A or mode_B or mode_C or mode_D)
+    if not ok and DIAG_MODE:
         if not trend_up: reasons.append("trend")
-        if not breakout: reasons.append("breakout")
-        if not (vol_ok or vol_ok_lo or (pd.notna(volx) and volx >= 1.0)): reasons.append("volume")
-        if not (rsi_ok or rsi_lo): reasons.append("rsi")
-        if not macd_ok: reasons.append("macd")
+        if not (breakout or near_high or ema_gap_ok): reasons.append("setup")
+        if not (vol_ok or vol_ok_lo or vol_ok_09): reasons.append("volume")
+        if not (rsi_ok or rsi_lo or rsi_cont): reasons.append("rsi")
+        if not (macd_ok or macd_rising): reasons.append("macd")
     return ok, reasons
 
 def watch_signal_row(row_prev, row):
     """
     WATCH (near-breakout) — widened:
       - EMA10>EMA30
-      - Close within 2% of prior N-day high
-      - VolRatio >= 0.9
-      - RSI >= max(RSI_MIN-7, 42)
+      - Close within 3% of prior N-day high
+      - VolRatio >= 0.8
+      - RSI >= max(RSI_MIN-7, 40)
       - MACDhist >= 0
     """
-    trend_up = pd.notna(row["EMA10"]) and pd.notna(row["EMA30"]) and (row["EMA10"] > row["EMA30"])
+    ema10, ema30 = row.get("EMA10", np.nan), row.get("EMA30", np.nan)
+    trend_up = pd.notna(ema10) and pd.notna(ema30) and (ema10 > ema30)
     highN    = row.get("High20", np.nan)
-    near = pd.notna(highN) and highN > 0 and 0 < (highN - row["Close"]) / highN <= 0.02  # 2%
-    vol_ok = pd.notna(row.get("VolRatio", np.nan)) and row["VolRatio"] >= 0.9
-    rsi_ok = pd.notna(row.get("RSI14", np.nan)) and row["RSI14"] >= max(float(RSI_MIN) - 7, 42)
+    near = pd.notna(highN) and highN > 0 and 0 < (highN - row["Close"]) / highN <= 0.03  # 3%
+    vol_ok = pd.notna(row.get("VolRatio", np.nan)) and row["VolRatio"] >= 0.8
+    rsi_ok = pd.notna(row.get("RSI14", np.nan)) and row["RSI14"] >= max(float(RSI_MIN) - 7, 40)
     macd_ok = pd.notna(row.get("MACDhist", np.nan)) and row["MACDhist"] >= 0
     return trend_up and near and vol_ok and rsi_ok and macd_ok
 
