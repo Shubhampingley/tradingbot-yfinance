@@ -1,61 +1,77 @@
-import os
-import yfinance as yf
 import pandas as pd
+import yfinance as yf
+import datetime as dt
+import os
 import requests
-from datetime import datetime, timedelta
 
-# Telegram setup
+# --- Telegram Setup ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram(msg: str):
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         try:
-            requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+            requests.post(url, data=payload)
         except Exception as e:
             print("Telegram error:", e)
 
-def check_swing_signals(ticker: str):
+# --- Load tickers from CSV ---
+def load_tickers():
     try:
-        df = yf.download(ticker, period="6mo", interval="1d")
-        if df.empty:
+        df = pd.read_csv("stocks.csv", header=None)
+        tickers = df[0].dropna().tolist()
+        return tickers
+    except Exception as e:
+        send_telegram(f"❌ Error reading stocks.csv: {e}")
+        return []
+
+# --- Strategy: Swing trade filter ---
+def check_strategy(ticker):
+    try:
+        data = yf.download(ticker, period="6mo", interval="1d", progress=False)
+        if data.empty:
             return None
 
-        df["20EMA"] = df["Close"].ewm(span=20, adjust=False).mean()
-        df["200EMA"] = df["Close"].ewm(span=200, adjust=False).mean()
+        data["RSI"] = compute_rsi(data["Close"])
+        latest = data.iloc[-1]
 
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
-
-        signal = None
-        if latest["Close"] > latest["20EMA"] > latest["200EMA"]:
-            if latest["Close"] > prev["Close"] * 1.02:  # breakout >2%
-                signal = f"📈 {ticker} breakout above 20EMA & 200EMA"
-        elif latest["Close"] < latest["20EMA"] < latest["200EMA"]:
-            if latest["Close"] < prev["Close"] * 0.98:  # breakdown >2%
-                signal = f"📉 {ticker} breakdown below 20EMA & 200EMA"
-
-        return signal
+        # Example swing condition: RSI above 60 + price above 50EMA
+        ema50 = data["Close"].ewm(span=50).mean().iloc[-1]
+        if latest["RSI"] > 60 and latest["Close"] > ema50:
+            return f"{ticker}: Close={latest['Close']:.2f}, RSI={latest['RSI']:.1f}"
     except Exception as e:
-        print(f"Error {ticker}: {e}")
-        return None
+        print(f"Error fetching {ticker}: {e}")
+    return None
 
-def main():
-    tickers = os.getenv("TICKERS", "RELIANCE.NS,TCS.NS,INFY.NS,HDFCBANK.NS").split(",")
+# --- RSI function ---
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-    messages = []
+# --- Main run ---
+def run_scanner():
+    tickers = load_tickers()
+    if not tickers:
+        send_telegram("⚠️ No tickers found in stocks.csv")
+        return
+
+    signals = []
     for t in tickers:
-        signal = check_swing_signals(t.strip())
-        if signal:
-            messages.append(signal)
+        res = check_strategy(t)
+        if res:
+            signals.append(res)
 
-    if messages:
-        final_msg = "🚀 Swing Trade Alerts:\n" + "\n".join(messages)
-        print(final_msg)
-        send_telegram(final_msg)
+    if signals:
+        send_telegram("✅ Swing Trade Signals:\n" + "\n".join(signals))
     else:
-        print("No signals today.")
+        send_telegram("ℹ️ No signals found today.")
 
 if __name__ == "__main__":
-    main()
+    run_scanner()
